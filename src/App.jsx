@@ -19,7 +19,7 @@ export default function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showEmailAuth, setShowEmailAuth] = useState(false);
-  const [isWaitingForEmail, setIsWaitingForEmail] = useState(false); // New State
+  const [isWaitingForEmail, setIsWaitingForEmail] = useState(false);
 
   const initApp = useCallback(async (isInitial = false) => {
     if(isInitial) setLoading(true);
@@ -32,14 +32,10 @@ export default function App() {
 
   useEffect(() => {
     setIsMobile(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
-    
-    // Check initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
         setUser(session?.user ?? null);
         initApp(true);
     });
-
-    // Listen for the redirect back from the Email link
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user ?? null);
       if (event === 'SIGNED_IN') {
@@ -47,20 +43,15 @@ export default function App() {
         initApp(false);
       }
     });
-    
     return () => subscription.unsubscribe();
   }, [initApp]);
 
   const handleEmailAuth = async (type) => {
     const redirectTo = window.location.origin;
     if (type === 'signup') {
-      const { error } = await supabase.auth.signUp({ 
-        email, 
-        password, 
-        options: { emailRedirectTo: redirectTo } 
-      });
+      const { error } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: redirectTo } });
       if (error) return alert(error.message);
-      setIsWaitingForEmail(true); // Show instructions to check email
+      setIsWaitingForEmail(true);
     } else {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) alert(error.message);
@@ -74,7 +65,6 @@ export default function App() {
     });
   };
 
-  // --- UI LOGIC HELPERS ---
   const handleAddPlayer = async (e, isManualEntry = false) => {
     if(e) e.preventDefault();
     if(!newName.trim() || !user) return;
@@ -105,19 +95,22 @@ export default function App() {
   const myEntry = user ? players.find(p => p.user_id === user.id) : null;
   const costPerPerson = gameData?.use_manual_split ? gameData.manual_price : (gameData ? Math.round(gameData.turf_price / (players.length || 1)) : 0);
   const upiUrl = `upi://pay?pa=${gameData?.pay_to_number}&pn=TURF&am=${costPerPerson}&cu=INR&tn=TURF`;
+  
+  // --- FIXED VARIABLES ---
+  const verifiedCount = players.filter(p => p.payment_status === 'verified').length;
+  const totalCollected = verifiedCount * costPerPerson;
+  const targetTotal = gameData?.use_manual_split ? (players.length * gameData.manual_price) : gameData?.turf_price;
 
-  // --- LOGIN VIEW ---
   if (!user && !loading) return (
     <div style={containerStyle}>
       <div style={{ maxWidth: '400px', margin: '100px auto 0 auto', padding: '0 20px' }}>
         <div style={{...cardStyle, padding: '40px 20px', border: '2px solid #fff'}}>
           <h1 style={{ fontSize: '28px', fontWeight: '900', letterSpacing: '-1px', marginBottom: '10px' }}>SQUAD_LINKS</h1>
-          
           {isWaitingForEmail ? (
             <div style={{textAlign:'center'}}>
                 <p style={{fontSize:'12px', color:'#FFD700', marginBottom:'20px'}}>📧 VERIFICATION_LINK_SENT</p>
-                <p style={{fontSize:'10px', color:'#888', lineHeight:'1.5'}}>PLEASE CHECK YOUR INBOX AND CLICK THE LINK TO ACTIVATE YOUR ACCOUNT. THIS PAGE WILL UPDATE AUTOMATICALLY.</p>
-                <button onClick={() => setIsWaitingForEmail(false)} style={{...miniBtn, marginTop:'20px', border:'none'}}>[ WRONG EMAIL? GO BACK ]</button>
+                <p style={{fontSize:'10px', color:'#888', lineHeight:'1.5'}}>CHECK YOUR INBOX TO ACTIVATE YOUR ACCOUNT. THIS PAGE UPDATES AUTOMATICALLY.</p>
+                <button onClick={() => setIsWaitingForEmail(false)} style={{...miniBtn, marginTop:'20px', border:'none'}}>[ BACK ]</button>
             </div>
           ) : !showEmailAuth ? (
             <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
@@ -142,7 +135,6 @@ export default function App() {
 
   if (loading || !gameData) return <div style={containerStyle}>BOOTING_SYSTEM...</div>;
 
-  // Dashboard render stays the same as previous fixed version
   return (
     <div style={containerStyle}>
       <div style={{ maxWidth: '440px', margin: '0 auto' }}>
@@ -228,7 +220,7 @@ export default function App() {
             })}
         </div>
         <div style={{marginTop:'30px', padding:'15px', borderTop:'1px solid #333', textAlign:'center'}}>
-           <span style={{...labelStyle, margin:0, textAlign:'center'}}>TOTAL_COLLECTED: ₹{verifiedCount * costPerPerson} / {gameData?.use_manual_split ? (players.length * gameData.manual_price) : gameData?.turf_price}</span>
+           <span style={{...labelStyle, margin:0, textAlign:'center'}}>TOTAL_COLLECTED: ₹{totalCollected} / ₹{targetTotal}</span>
         </div>
       </div>
     </div>
