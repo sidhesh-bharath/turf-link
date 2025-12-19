@@ -34,28 +34,31 @@ export default function App() {
     setIsMobile(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
     
     // Check session on load
-    supabase.auth.getSession().then(({ data: { session } }) => {
-        setUser(session?.user ?? null);
-        initApp(true);
-    });
-
-    // Handle Auth state changes (Login/Logout/Email Click)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const checkUser = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
       setUser(session?.user ?? null);
-      if (event === 'SIGNED_IN') {
+      initApp(true);
+    };
+    checkUser();
+
+    // Listener for state changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' || event === 'USER_UPDATED') {
+        setUser(session?.user ?? null);
         setIsWaitingForEmail(false);
         initApp(false);
       }
       if (event === 'SIGNED_OUT') {
         setUser(null);
         setPlayers([]);
+        setIsEditingGame(false);
       }
     });
     
     return () => subscription.unsubscribe();
   }, [initApp]);
 
-  // --- COMPATIBLE AUTH LOGIC ---
+  // --- AUTH FLOWS ---
   const handleEmailAuth = async (type) => {
     const currentUrl = window.location.origin;
     if (type === 'signup') {
@@ -80,21 +83,37 @@ export default function App() {
   };
 
   const handleLogout = async () => {
+    setLoading(true);
+    // 1. Sign out from Supabase
     await supabase.auth.signOut();
-    window.location.href = window.location.origin; // Force clear UI state
+    // 2. Wipe everything local
+    localStorage.clear();
+    sessionStorage.clear();
+    // 3. Hard reload to root to ensure clean state
+    window.location.replace(window.location.origin);
   };
 
   // --- GAME LOGIC ---
   const handleAddPlayer = async (e, isManualEntry = false) => {
     if(e) e.preventDefault();
     if(!newName.trim() || !user) return;
-    const { data } = await supabase.from('squad_players').insert([{ 
+    
+    // STOP NORMAL USERS FROM ADDING MULTIPLE
+    if (!isManualEntry && players.some(p => p.user_id === user.id)) {
+      return alert("SYSTEM_LIMIT: ONE_ENTRY_PER_USER");
+    }
+
+    const { data, error } = await supabase.from('squad_players').insert([{ 
         name: newName.toUpperCase(), 
         user_id: isManualEntry ? null : user.id, 
         payment_status: 'pending' 
     }]).select();
-    if(data) setPlayers([...players, data[0]]);
-    setNewName("");
+    
+    if(data) {
+      setPlayers([...players, data[0]]);
+      setNewName("");
+    }
+    if(error) alert(error.message);
   };
 
   const updateStatus = async (player, newStatus) => {
@@ -112,21 +131,23 @@ export default function App() {
     const shareData = {
       title: `SQUAD_LINKS: ${gameData.turf_name}`,
       text: `SQUAD_LINKS: ${gameData.turf_name}\nVENUE: ${gameData.location}\nTIME: ${gameData.time}\n\nJoin the squad here:`,
-      url: window.location.href,
+      url: window.location.origin,
     };
     try { if (navigator.share) await navigator.share(shareData); } catch (err) { console.log(err); }
   };
 
-  // --- CALCULATIONS (FIXED SCOPING) ---
+  // --- CALCULATIONS ---
   const isHost = user && gameData && user.id === gameData.host_id;
   const myEntry = user ? players.find(p => p.user_id === user.id) : null;
   const costPerPerson = gameData?.use_manual_split ? gameData.manual_price : (gameData ? Math.round(gameData.turf_price / (players.length || 1)) : 0);
   const upiUrl = `upi://pay?pa=${gameData?.pay_to_number}&pn=TURF&am=${costPerPerson}&cu=INR&tn=TURF`;
   const verifiedCount = players.filter(p => p.payment_status === 'verified').length;
   const totalCollected = verifiedCount * costPerPerson;
-  const targetTotal = gameData?.use_manual_split ? (players.length * gameData.manual_price) : (gameData?.turf_price || 0);
+  const targetTotal = gameData?.use_manual_split ? (players.length * (gameData.manual_price || 0)) : (gameData?.turf_price || 0);
 
-  if (!user && !loading) return (
+  if (loading) return <div style={containerStyle}>SYNCHRONIZING_CORE...</div>;
+
+  if (!user) return (
     <div style={containerStyle}>
       <div style={{ maxWidth: '400px', margin: '100px auto 0 auto', padding: '0 20px' }}>
         <div style={{...cardStyle, padding: '40px 20px', border: '2px solid #fff'}}>
@@ -134,7 +155,7 @@ export default function App() {
           {isWaitingForEmail ? (
             <div style={{textAlign:'center'}}>
                 <p style={{fontSize:'12px', color:'#FFD700', marginBottom:'20px'}}>📧 VERIFICATION_LINK_SENT</p>
-                <p style={{fontSize:'10px', color:'#888', lineHeight:'1.5'}}>CHECK YOUR INBOX AND CLICK THE LINK. THIS PAGE WILL UPDATE AUTOMATICALLY UPON RETURN.</p>
+                <p style={{fontSize:'10px', color:'#888', lineHeight:'1.5'}}>CHECK YOUR INBOX AND CLICK THE LINK. RETURN TO THIS TAB AFTER VERIFYING.</p>
                 <button onClick={() => setIsWaitingForEmail(false)} style={{...miniBtn, marginTop:'20px', border:'none'}}>[ BACK ]</button>
             </div>
           ) : !showEmailAuth ? (
@@ -158,8 +179,6 @@ export default function App() {
     </div>
   );
 
-  if (loading || !gameData) return <div style={containerStyle}>BOOTING_SYSTEM...</div>;
-
   return (
     <div style={containerStyle}>
       <div style={{ maxWidth: '440px', margin: '0 auto' }}>
@@ -167,7 +186,7 @@ export default function App() {
           <h1 style={{ fontSize: '18px', fontWeight: '800', margin: 0 }}>SQUAD_LINKS</h1>
           <div style={{ display: 'flex', gap: '10px' }}>
             {isHost && <button onClick={() => setIsEditingGame(!isEditingGame)} style={miniBtn}>{isEditingGame ? '[CLOSE]' : '[EDIT]'}</button>}
-            <button onClick={handleLogout} style={miniBtn}>[LOGOUT]</button>
+            <button onClick={handleLogout} style={{...miniBtn, borderColor: '#ff4444', color: '#ff4444'}}>[LOGOUT]</button>
           </div>
         </div>
 
@@ -211,7 +230,9 @@ export default function App() {
 
         <form onSubmit={(e) => handleAddPlayer(e, false)} style={{ display: 'flex', margin: '20px 0', gap: '5px' }}>
           <input style={{...inputStyle, flex: 1, backgroundColor: '#1a1a1a', border: '1px solid #333', padding: '12px'}} placeholder="ENTER_NAME" value={newName} onChange={e => setNewName(e.target.value)} />
-          <button type="submit" style={{backgroundColor:'#fff', color:'#000', fontWeight:'800', border:'none', padding:'0 20px', fontSize: '10px'}}>JOIN</button>
+          <button type="submit" disabled={!!myEntry} style={{backgroundColor: myEntry ? '#222' : '#fff', color: myEntry ? '#666' : '#000', fontWeight:'800', border:'none', padding:'0 20px', fontSize: '10px', cursor: myEntry ? 'not-allowed' : 'pointer'}}>
+            {myEntry ? 'IN_ROSTER' : 'JOIN'}
+          </button>
           {isHost && <button type="button" onClick={() => handleAddPlayer(null, true)} style={{...miniBtn, padding:'0 15px'}}>+ENTRY</button>}
         </form>
 
