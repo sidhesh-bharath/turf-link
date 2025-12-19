@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { QRCodeSVG } from 'qrcode.react';
 
+// --- INITIALIZE SUPABASE ---
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
@@ -21,6 +22,7 @@ export default function App() {
   const [showEmailAuth, setShowEmailAuth] = useState(false);
   const [isWaitingForEmail, setIsWaitingForEmail] = useState(false);
 
+  // --- CORE SYSTEM INIT ---
   const initApp = useCallback(async (isInitial = false) => {
     if(isInitial) setLoading(true);
     const { data: settings } = await supabase.from('squad_settings').select('*').single();
@@ -41,7 +43,7 @@ export default function App() {
     };
     checkUser();
 
-    // Listener for state changes
+    // Environment-aware Auth Listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === 'SIGNED_IN' || event === 'USER_UPDATED') {
         setUser(session?.user ?? null);
@@ -58,7 +60,7 @@ export default function App() {
     return () => subscription.unsubscribe();
   }, [initApp]);
 
-  // --- AUTH FLOWS ---
+  // --- AUTH ACTIONS ---
   const handleEmailAuth = async (type) => {
     const currentUrl = window.location.origin;
     if (type === 'signup') {
@@ -84,21 +86,35 @@ export default function App() {
 
   const handleLogout = async () => {
     setLoading(true);
-    // 1. Sign out from Supabase
     await supabase.auth.signOut();
-    // 2. Wipe everything local
     localStorage.clear();
     sessionStorage.clear();
-    // 3. Hard reload to root to ensure clean state
+    // Aggressive reload to clear Vercel cache/state
     window.location.replace(window.location.origin);
   };
 
-  // --- GAME LOGIC ---
+  // --- ADMIN ACTIONS ---
+  const transferHost = async (newHostId, newHostName) => {
+    const confirmTransfer = window.confirm(`TRANSFER ADMIN PRIVILEGES TO ${newHostName.toUpperCase()}?`);
+    if (!confirmTransfer) return;
+
+    const { error } = await supabase.from('squad_settings').update({ host_id: newHostId }).eq('id', 1);
+
+    if (error) {
+      alert("TRANSFER_FAILED: " + error.message);
+    } else {
+      alert(`ADMIN_TRANSFERRED_TO_${newHostName.toUpperCase()}`);
+      setIsEditingGame(false);
+      initApp(); 
+    }
+  };
+
+  // --- PLAYER ACTIONS ---
   const handleAddPlayer = async (e, isManualEntry = false) => {
     if(e) e.preventDefault();
     if(!newName.trim() || !user) return;
     
-    // STOP NORMAL USERS FROM ADDING MULTIPLE
+    // Feature: One entry per real user
     if (!isManualEntry && players.some(p => p.user_id === user.id)) {
       return alert("SYSTEM_LIMIT: ONE_ENTRY_PER_USER");
     }
@@ -145,6 +161,7 @@ export default function App() {
   const totalCollected = verifiedCount * costPerPerson;
   const targetTotal = gameData?.use_manual_split ? (players.length * (gameData.manual_price || 0)) : (gameData?.turf_price || 0);
 
+  // --- RENDER LOGIN ---
   if (loading) return <div style={containerStyle}>SYNCHRONIZING_CORE...</div>;
 
   if (!user) return (
@@ -155,7 +172,7 @@ export default function App() {
           {isWaitingForEmail ? (
             <div style={{textAlign:'center'}}>
                 <p style={{fontSize:'12px', color:'#FFD700', marginBottom:'20px'}}>📧 VERIFICATION_LINK_SENT</p>
-                <p style={{fontSize:'10px', color:'#888', lineHeight:'1.5'}}>CHECK YOUR INBOX AND CLICK THE LINK. RETURN TO THIS TAB AFTER VERIFYING.</p>
+                <p style={{fontSize:'10px', color:'#888', lineHeight:'1.5'}}>CHECK YOUR INBOX. THIS PAGE UPDATES AUTOMATICALLY UPON RETURN.</p>
                 <button onClick={() => setIsWaitingForEmail(false)} style={{...miniBtn, marginTop:'20px', border:'none'}}>[ BACK ]</button>
             </div>
           ) : !showEmailAuth ? (
@@ -179,6 +196,7 @@ export default function App() {
     </div>
   );
 
+  // --- RENDER DASHBOARD ---
   return (
     <div style={containerStyle}>
       <div style={{ maxWidth: '440px', margin: '0 auto' }}>
@@ -247,9 +265,16 @@ export default function App() {
                 else if (p.payment_status === 'verified') { btnColor = '#00FF41'; btnText = 'VERIFIED'; }
                 return (
                     <div key={p.id} style={{...playerRow, backgroundColor: isMe ? '#111' : 'transparent'}}>
-                        <span style={{color: isMe ? '#0088ff' : '#fff'}}>{isEntryAdmin && '👑 '}{p.name} {isMe && '(YOU)'} {isManualEntry && '(M)'}</span>
+                        <span style={{color: isMe ? '#0088ff' : '#fff'}}>{isEntryAdmin && '👑 '}{p.name} {isMe && '(YOU)'}</span>
                         <div style={{ display: 'flex', gap: '10px' }}>
+                             
+                             {/* FEATURE: TRANSFER ADMIN */}
+                             {isHost && !isMe && !isManualEntry && (
+                               <button onClick={() => transferHost(p.user_id, p.name)} style={{...miniBtn, borderColor: '#FFD700', color: '#FFD700'}}>TRANSFER</button>
+                             )}
+
                              {isManualEntry && !myEntry && <button onClick={() => claimAccount(p)} style={{...miniBtn, color:'#0088ff', borderColor:'#0088ff'}}>CLAIM</button>}
+                             
                              <button onClick={() => {
                                     if(p.payment_status === 'verified' && isHost) updateStatus(p, 'pending');
                                     else if(p.payment_status === 'review' && isHost) updateStatus(p, 'verified');
@@ -259,6 +284,7 @@ export default function App() {
                                 disabled={(!isMe && !isHost && !(isManualEntry && !myEntry)) || (p.payment_status === 'verified' && !isHost)}
                                 style={{ ...miniBtn, borderColor: btnColor, color: btnColor, minWidth: '85px' }}
                             >{btnText}</button>
+                            
                             {isHost && <button onClick={() => supabase.from('squad_players').delete().eq('id', p.id).then(() => initApp())} style={{ color: '#ff4444', border: 'none', background: 'none' }}>[X]</button>}
                         </div>
                     </div>
@@ -273,6 +299,7 @@ export default function App() {
   );
 }
 
+// --- STYLING ---
 const containerStyle = { fontFamily: "'JetBrains Mono', monospace", backgroundColor: '#0a0a0a', minHeight: '100vh', color: '#fff', padding: '20px', textTransform: 'uppercase' };
 const headerStyle = { display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #333', paddingBottom: '10px', marginBottom: '30px' };
 const cardStyle = { border: '1px solid #fff', padding: '20px', backgroundColor: '#111', textAlign: 'center', marginBottom: '20px' };
