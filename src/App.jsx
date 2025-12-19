@@ -204,7 +204,7 @@ export default function App() {
           <h1 style={{ fontSize: '18px', fontWeight: '800', margin: 0 }}>SQUAD_LINKS</h1>
           <div style={{ display: 'flex', gap: '10px' }}>
             {isHost && <button onClick={() => setIsEditingGame(!isEditingGame)} style={miniBtn}>{isEditingGame ? '[CLOSE]' : '[EDIT]'}</button>}
-            <button onClick={handleLogout} style={{...miniBtn, borderColor: '#ff4444', color: '#ff4444'}}>[LOGOUT]</button>
+            <button onClick={handleLogout} style={{...miniBtn, borderColor: '#444', color: '#e8e8e8ff'}}>[LOGOUT]</button>
           </div>
         </div>
 
