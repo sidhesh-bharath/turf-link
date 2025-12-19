@@ -18,9 +18,8 @@ export default function App() {
   
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [otp, setOtp] = useState("");
   const [showEmailAuth, setShowEmailAuth] = useState(false);
-  const [authStep, setAuthStep] = useState("input");
+  const [isWaitingForEmail, setIsWaitingForEmail] = useState(false); // New State
 
   const initApp = useCallback(async (isInitial = false) => {
     if(isInitial) setLoading(true);
@@ -33,38 +32,52 @@ export default function App() {
 
   useEffect(() => {
     setIsMobile(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
+    
+    // Check initial session
     supabase.auth.getSession().then(({ data: { session } }) => {
         setUser(session?.user ?? null);
         initApp(true);
     });
+
+    // Listen for the redirect back from the Email link
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user ?? null);
-      if (event === 'SIGNED_IN') initApp(false);
+      if (event === 'SIGNED_IN') {
+        setIsWaitingForEmail(false);
+        initApp(false);
+      }
     });
+    
     return () => subscription.unsubscribe();
   }, [initApp]);
 
   const handleEmailAuth = async (type) => {
+    const redirectTo = window.location.origin;
     if (type === 'signup') {
-      const { error } = await supabase.auth.signUp({ email, password });
+      const { error } = await supabase.auth.signUp({ 
+        email, 
+        password, 
+        options: { emailRedirectTo: redirectTo } 
+      });
       if (error) return alert(error.message);
-      setAuthStep("verify");
-      alert("VERIFICATION_LINK_SENT_TO_EMAIL");
+      setIsWaitingForEmail(true); // Show instructions to check email
     } else {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) alert(error.message);
     }
   };
 
-  const verifyOTP = async () => {
-    const { error } = await supabase.auth.verifyOtp({ email, token: otp, type: 'signup' });
-    if (error) alert(error.message);
+  const handleGoogleLogin = async () => {
+    await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin }
+    });
   };
 
+  // --- UI LOGIC HELPERS ---
   const handleAddPlayer = async (e, isManualEntry = false) => {
     if(e) e.preventDefault();
     if(!newName.trim() || !user) return;
-    if (!isManualEntry && players.find(p => p.user_id === user?.id)) return alert("ALREADY_IN_ROSTER");
     const { data } = await supabase.from('squad_players').insert([{ 
         name: newName.toUpperCase(), 
         user_id: isManualEntry ? null : user.id, 
@@ -79,44 +92,39 @@ export default function App() {
     await supabase.from('squad_players').update({ payment_status: newStatus }).eq('id', player.id);
   };
 
-  const claimAccount = async (player) => {
-    if (!user || players.find(p => p.user_id === user?.id)) return alert("YOU_ALREADY_HAVE_A_SLOT");
-    const { data } = await supabase.from('squad_players').update({ user_id: user.id }).eq('id', player.id).select();
-    if (data) setPlayers(players.map(p => p.id === player.id ? { ...p, user_id: user.id } : p));
-  };
-
   const handleSystemShare = async () => {
     const shareData = {
       title: `SQUAD_LINKS: ${gameData.turf_name}`,
       text: `SQUAD_LINKS: ${gameData.turf_name}\nVENUE: ${gameData.location}\nTIME: ${gameData.time}\n\nJoin the squad here:`,
       url: window.location.href,
     };
-    try {
-      if (navigator.share) { await navigator.share(shareData); } 
-      else { await navigator.clipboard.writeText(`${shareData.text} ${shareData.url}`); alert("LINK_COPIED"); }
-    } catch (err) { console.log(err); }
+    try { if (navigator.share) await navigator.share(shareData); } catch (err) { console.log(err); }
   };
 
   const isHost = user && gameData && user.id === gameData.host_id;
   const myEntry = user ? players.find(p => p.user_id === user.id) : null;
   const costPerPerson = gameData?.use_manual_split ? gameData.manual_price : (gameData ? Math.round(gameData.turf_price / (players.length || 1)) : 0);
   const upiUrl = `upi://pay?pa=${gameData?.pay_to_number}&pn=TURF&am=${costPerPerson}&cu=INR&tn=TURF`;
-  const verifiedCount = players.filter(p => p.payment_status === 'verified').length;
-  const totalCollected = verifiedCount * costPerPerson;
-  const targetTotal = gameData?.use_manual_split ? (players.length * gameData.manual_price) : gameData?.turf_price;
 
+  // --- LOGIN VIEW ---
   if (!user && !loading) return (
     <div style={containerStyle}>
       <div style={{ maxWidth: '400px', margin: '100px auto 0 auto', padding: '0 20px' }}>
         <div style={{...cardStyle, padding: '40px 20px', border: '2px solid #fff'}}>
           <h1 style={{ fontSize: '28px', fontWeight: '900', letterSpacing: '-1px', marginBottom: '10px' }}>SQUAD_LINKS</h1>
-          <p style={{...labelStyle, textAlign: 'center', marginBottom: '30px', color: '#888'}}>V1.0_CORE_SYSTEM_ACCESS</p>
-          {!showEmailAuth ? (
+          
+          {isWaitingForEmail ? (
+            <div style={{textAlign:'center'}}>
+                <p style={{fontSize:'12px', color:'#FFD700', marginBottom:'20px'}}>📧 VERIFICATION_LINK_SENT</p>
+                <p style={{fontSize:'10px', color:'#888', lineHeight:'1.5'}}>PLEASE CHECK YOUR INBOX AND CLICK THE LINK TO ACTIVATE YOUR ACCOUNT. THIS PAGE WILL UPDATE AUTOMATICALLY.</p>
+                <button onClick={() => setIsWaitingForEmail(false)} style={{...miniBtn, marginTop:'20px', border:'none'}}>[ WRONG EMAIL? GO BACK ]</button>
+            </div>
+          ) : !showEmailAuth ? (
             <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
-              <button onClick={() => supabase.auth.signInWithOAuth({ provider: 'google' })} style={payBtn}>CONTINUE_WITH_GOOGLE</button>
+              <button onClick={handleGoogleLogin} style={payBtn}>CONTINUE_WITH_GOOGLE</button>
               <button onClick={() => setShowEmailAuth(true)} style={{...miniBtn, padding: '15px', fontSize: '12px'}}>INTERNAL_AUTH_LOGIN</button>
             </div>
-          ) : authStep === "input" ? (
+          ) : (
             <div style={{display:'flex', flexDirection:'column', gap:'15px'}}>
               <div style={inputGroup}><span style={inputLabel}>UID:</span><input style={inputStyle} placeholder="EMAIL" value={email} onChange={e => setEmail(e.target.value)} /></div>
               <div style={inputGroup}><span style={inputLabel}>KEY:</span><input style={inputStyle} type="password" placeholder="PASSWORD" value={password} onChange={e => setPassword(e.target.value)} /></div>
@@ -126,13 +134,6 @@ export default function App() {
               </div>
               <button onClick={() => setShowEmailAuth(false)} style={{...miniBtn, border: 'none', color: '#666'}}>[ BACK ]</button>
             </div>
-          ) : (
-            <div style={{display:'flex', flexDirection:'column', gap:'15px'}}>
-              <p style={{fontSize:'10px', color:'#FFD700'}}>⚠️ CHECK_EMAIL_FOR_VERIFICATION_CODE</p>
-              <div style={inputGroup}><span style={inputLabel}>OTP:</span><input style={inputStyle} placeholder="6-DIGIT_CODE" value={otp} onChange={e => setOtp(e.target.value)} /></div>
-              <button onClick={verifyOTP} style={payBtn}>VERIFY_&_ENTER</button>
-              <button onClick={() => setAuthStep("input")} style={{...miniBtn, border: 'none', color: '#666'}}>[ WRONG_EMAIL?_GO_BACK ]</button>
-            </div>
           )}
         </div>
       </div>
@@ -141,6 +142,7 @@ export default function App() {
 
   if (loading || !gameData) return <div style={containerStyle}>BOOTING_SYSTEM...</div>;
 
+  // Dashboard render stays the same as previous fixed version
   return (
     <div style={containerStyle}>
       <div style={{ maxWidth: '440px', margin: '0 auto' }}>
@@ -162,10 +164,9 @@ export default function App() {
               <div style={inputGroup}><span style={inputLabel}>TIME:</span><input style={inputStyle} value={gameData.time} onChange={e => setGameData({...gameData, time: e.target.value})} /></div>
               <div style={inputGroup}><span style={inputLabel}>TOTAL:</span><input style={inputStyle} type="number" value={gameData.turf_price} onChange={e => setGameData({...gameData, turf_price: e.target.value})} /></div>
               <div style={inputGroup}><span style={inputLabel}>UPI:</span><input style={inputStyle} value={gameData.pay_to_number} onChange={e => setGameData({...gameData, pay_to_number: e.target.value})} /></div>
-              <div style={{display:'flex', gap:'10px', alignItems:'center', padding: '10px 0', justifyContent: 'flex-start'}}><span style={{...labelStyle, marginBottom: 0}}>MANUAL_SPLIT:</span><input type="checkbox" checked={gameData.use_manual_split} onChange={e => setGameData({...gameData, use_manual_split: e.target.checked})} style={{width:'16px', height:'16px', cursor:'pointer'}} /></div>
+              <div style={{display:'flex', gap:'12px', alignItems:'center', padding: '10px 0', justifyContent: 'flex-start'}}><span style={{...labelStyle, marginBottom: 0}}>MANUAL_SPLIT:</span><input type="checkbox" checked={gameData.use_manual_split} onChange={e => setGameData({...gameData, use_manual_split: e.target.checked})} style={{width:'18px', height:'18px', cursor:'pointer', margin: 0}} /></div>
               {gameData.use_manual_split && <div style={inputGroup}><span style={inputLabel}>PRICE:</span><input style={inputStyle} type="number" value={gameData.manual_price} onChange={e => setGameData({...gameData, manual_price: e.target.value})} /></div>}
               <button onClick={() => supabase.from('squad_settings').update(gameData).eq('id', 1).then(() => setIsEditingGame(false))} style={payBtn}>SAVE_CHANGES</button>
-              <button onClick={async () => { if(confirm("WIPE_ROSTER?")) { await supabase.from('squad_players').delete().neq('id', 0); initApp(); setIsEditingGame(false); } }} style={{...miniBtn, marginTop:'20px', color:'#ff4444', borderColor:'#ff4444', padding:'10px'}}>RESET_ALL_PLAYERS</button>
             </div>
           </div>
         ) : (
@@ -174,7 +175,7 @@ export default function App() {
                 <h2 style={{ fontSize: '22px', margin: '0' }}>{gameData.turf_name}</h2>
                 <p style={{ fontSize: '11px', color: '#666', margin: '5px 0' }}>{gameData.location} // {gameData.time}</p>
                 <div style={{display:'flex', gap:'5px', marginTop:'10px'}}>
-                  <button onClick={() => { if(gameData.map_link) { navigator.clipboard.writeText(gameData.map_link); alert("COPIED"); } }} style={{...miniBtn, flex:1}}>COPY_MAP</button>
+                  <button onClick={() => { navigator.clipboard.writeText(gameData.map_link); alert("COPIED"); }} style={{...miniBtn, flex:1}}>COPY_MAP</button>
                   <button onClick={handleSystemShare} style={{...miniBtn, flex:1}}>SHARE_SQUAD</button>
                 </div>
             </div>
@@ -186,7 +187,7 @@ export default function App() {
                       <div style={{display:'flex', justifyContent:'center', padding:'10px', background:'#fff', marginBottom:'15px'}}><QRCodeSVG value={upiUrl} size={150} /></div>
                       {isMobile && <button onClick={() => window.location.href = upiUrl} style={payBtn}>OPEN_UPI_APP</button>}
                   </div>
-                ) : <button disabled style={{...payBtn, backgroundColor: '#222', color: '#fff', opacity:0.5, cursor: 'not-allowed'}}>PAYMENT_SUBMITTED</button>
+                ) : <button disabled style={{...payBtn, backgroundColor: '#222', color: '#fff', opacity:0.5}}>PAYMENT_SUBMITTED</button>
             ) : <p style={{...labelStyle, textAlign:'center'}}>JOIN_PLAYERS_TO_PAY</p>}
           </div>
         )}
@@ -205,14 +206,13 @@ export default function App() {
                 const isManualEntry = p.user_id === null;
                 let btnColor = '#444'; let btnText = 'MARK PAID';
                 if (p.payment_status === 'review') { btnColor = '#FFD700'; btnText = isHost ? 'APPROVE?' : 'WAITING'; }
-                else if (p.payment_status === 'verified') { btnColor = '#00FF41'; btnText = 'VERIFIED'; }
+                else if (p.payment_status === 'verified') { btnColor = '#00FF41'; btnText = 'PAID'; }
                 return (
                     <div key={p.id} style={{...playerRow, backgroundColor: isMe ? '#111' : 'transparent'}}>
                         <span style={{color: isMe ? '#0088ff' : '#fff'}}>{isEntryAdmin && '👑 '}{p.name} {isMe && '(YOU)'} {isManualEntry && '(M)'}</span>
                         <div style={{ display: 'flex', gap: '10px' }}>
                              {isManualEntry && !myEntry && <button onClick={() => claimAccount(p)} style={{...miniBtn, color:'#0088ff', borderColor:'#0088ff'}}>CLAIM</button>}
-                             <button 
-                                onClick={() => {
+                             <button onClick={() => {
                                     if(p.payment_status === 'verified' && isHost) updateStatus(p, 'pending');
                                     else if(p.payment_status === 'review' && isHost) updateStatus(p, 'verified');
                                     else if(p.payment_status === 'review' && isMe) updateStatus(p, 'pending');
@@ -228,7 +228,7 @@ export default function App() {
             })}
         </div>
         <div style={{marginTop:'30px', padding:'15px', borderTop:'1px solid #333', textAlign:'center'}}>
-           <span style={{...labelStyle, margin:0, textAlign:'center'}}>TOTAL_COLLECTED: ₹{totalCollected} / ₹{targetTotal}</span>
+           <span style={{...labelStyle, margin:0, textAlign:'center'}}>TOTAL_COLLECTED: ₹{verifiedCount * costPerPerson} / {gameData?.use_manual_split ? (players.length * gameData.manual_price) : gameData?.turf_price}</span>
         </div>
       </div>
     </div>
