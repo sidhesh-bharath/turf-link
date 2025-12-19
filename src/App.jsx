@@ -32,24 +32,38 @@ export default function App() {
 
   useEffect(() => {
     setIsMobile(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
+    
+    // Check session on load
     supabase.auth.getSession().then(({ data: { session } }) => {
         setUser(session?.user ?? null);
         initApp(true);
     });
+
+    // Handle Auth state changes (Login/Logout/Email Click)
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user ?? null);
       if (event === 'SIGNED_IN') {
         setIsWaitingForEmail(false);
         initApp(false);
       }
+      if (event === 'SIGNED_OUT') {
+        setUser(null);
+        setPlayers([]);
+      }
     });
+    
     return () => subscription.unsubscribe();
   }, [initApp]);
 
+  // --- COMPATIBLE AUTH LOGIC ---
   const handleEmailAuth = async (type) => {
-    const redirectTo = window.location.origin;
+    const currentUrl = window.location.origin;
     if (type === 'signup') {
-      const { error } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: redirectTo } });
+      const { error } = await supabase.auth.signUp({ 
+        email, 
+        password, 
+        options: { emailRedirectTo: currentUrl } 
+      });
       if (error) return alert(error.message);
       setIsWaitingForEmail(true);
     } else {
@@ -65,6 +79,12 @@ export default function App() {
     });
   };
 
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    window.location.href = window.location.origin; // Force clear UI state
+  };
+
+  // --- GAME LOGIC ---
   const handleAddPlayer = async (e, isManualEntry = false) => {
     if(e) e.preventDefault();
     if(!newName.trim() || !user) return;
@@ -82,6 +102,12 @@ export default function App() {
     await supabase.from('squad_players').update({ payment_status: newStatus }).eq('id', player.id);
   };
 
+  const claimAccount = async (player) => {
+    if (!user || players.find(p => p.user_id === user?.id)) return alert("YOU_ALREADY_HAVE_A_SLOT");
+    const { data } = await supabase.from('squad_players').update({ user_id: user.id }).eq('id', player.id).select();
+    if (data) setPlayers(players.map(p => p.id === player.id ? { ...p, user_id: user.id } : p));
+  };
+
   const handleSystemShare = async () => {
     const shareData = {
       title: `SQUAD_LINKS: ${gameData.turf_name}`,
@@ -91,15 +117,14 @@ export default function App() {
     try { if (navigator.share) await navigator.share(shareData); } catch (err) { console.log(err); }
   };
 
+  // --- CALCULATIONS (FIXED SCOPING) ---
   const isHost = user && gameData && user.id === gameData.host_id;
   const myEntry = user ? players.find(p => p.user_id === user.id) : null;
   const costPerPerson = gameData?.use_manual_split ? gameData.manual_price : (gameData ? Math.round(gameData.turf_price / (players.length || 1)) : 0);
   const upiUrl = `upi://pay?pa=${gameData?.pay_to_number}&pn=TURF&am=${costPerPerson}&cu=INR&tn=TURF`;
-  
-  // --- FIXED VARIABLES ---
   const verifiedCount = players.filter(p => p.payment_status === 'verified').length;
   const totalCollected = verifiedCount * costPerPerson;
-  const targetTotal = gameData?.use_manual_split ? (players.length * gameData.manual_price) : gameData?.turf_price;
+  const targetTotal = gameData?.use_manual_split ? (players.length * gameData.manual_price) : (gameData?.turf_price || 0);
 
   if (!user && !loading) return (
     <div style={containerStyle}>
@@ -109,7 +134,7 @@ export default function App() {
           {isWaitingForEmail ? (
             <div style={{textAlign:'center'}}>
                 <p style={{fontSize:'12px', color:'#FFD700', marginBottom:'20px'}}>📧 VERIFICATION_LINK_SENT</p>
-                <p style={{fontSize:'10px', color:'#888', lineHeight:'1.5'}}>CHECK YOUR INBOX TO ACTIVATE YOUR ACCOUNT. THIS PAGE UPDATES AUTOMATICALLY.</p>
+                <p style={{fontSize:'10px', color:'#888', lineHeight:'1.5'}}>CHECK YOUR INBOX AND CLICK THE LINK. THIS PAGE WILL UPDATE AUTOMATICALLY UPON RETURN.</p>
                 <button onClick={() => setIsWaitingForEmail(false)} style={{...miniBtn, marginTop:'20px', border:'none'}}>[ BACK ]</button>
             </div>
           ) : !showEmailAuth ? (
@@ -142,7 +167,7 @@ export default function App() {
           <h1 style={{ fontSize: '18px', fontWeight: '800', margin: 0 }}>SQUAD_LINKS</h1>
           <div style={{ display: 'flex', gap: '10px' }}>
             {isHost && <button onClick={() => setIsEditingGame(!isEditingGame)} style={miniBtn}>{isEditingGame ? '[CLOSE]' : '[EDIT]'}</button>}
-            <button onClick={() => supabase.auth.signOut()} style={miniBtn}>[LOGOUT]</button>
+            <button onClick={handleLogout} style={miniBtn}>[LOGOUT]</button>
           </div>
         </div>
 
@@ -198,7 +223,7 @@ export default function App() {
                 const isManualEntry = p.user_id === null;
                 let btnColor = '#444'; let btnText = 'MARK PAID';
                 if (p.payment_status === 'review') { btnColor = '#FFD700'; btnText = isHost ? 'APPROVE?' : 'WAITING'; }
-                else if (p.payment_status === 'verified') { btnColor = '#00FF41'; btnText = 'PAID'; }
+                else if (p.payment_status === 'verified') { btnColor = '#00FF41'; btnText = 'VERIFIED'; }
                 return (
                     <div key={p.id} style={{...playerRow, backgroundColor: isMe ? '#111' : 'transparent'}}>
                         <span style={{color: isMe ? '#0088ff' : '#fff'}}>{isEntryAdmin && '👑 '}{p.name} {isMe && '(YOU)'} {isManualEntry && '(M)'}</span>
