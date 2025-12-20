@@ -2,10 +2,36 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { createClient } from '@supabase/supabase-js';
 import { QRCodeSVG } from 'qrcode.react';
 
-// --- INITIALIZE SUPABASE ---
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 const supabase = createClient(supabaseUrl, supabaseKey);
+
+const GlobalStyles = () => (
+  <style>{`
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+    
+    ::-webkit-scrollbar { width: 0px; background: transparent; }
+    body, html { 
+      margin: 0; padding: 0; overflow: hidden; 
+      background-color: #000; height: 100%;
+      overscroll-behavior: none; font-family: 'JetBrains Mono', monospace;
+    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    
+    .boot-screen {
+      background: #000; height: 100vh; display: flex;
+      flex-direction: column; justify-content: center;
+      align-items: center; color: #fff; font-size: 10px;
+      letter-spacing: 2px;
+    }
+    .cursor { display: inline-block; width: 6px; height: 12px; background: #fff; margin-left: 5px; animation: blink 0.8s infinite; }
+    .loader-bar { width: 140px; height: 2px; background: #111; margin-top: 15px; position: relative; overflow: hidden; }
+    .loader-progress { 
+        position: absolute; height: 100%; background: #fff; width: 0%; 
+        transition: width 2s cubic-bezier(0.4, 0, 0.2, 1); 
+    }
+  `}</style>
+);
 
 export default function App() {
   const [user, setUser] = useState(null);
@@ -16,120 +42,98 @@ export default function App() {
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [bootText, setBootText] = useState("SYSTEM.BOOTING_SQUAD");
+  const [progress, setProgress] = useState(0);
   
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showEmailAuth, setShowEmailAuth] = useState(false);
-  const [isWaitingForEmail, setIsWaitingForEmail] = useState(false);
 
-  // --- CORE SYSTEM INIT ---
   const initApp = useCallback(async (isInitial = false) => {
-    if(isInitial) setLoading(true);
-    const { data: settings } = await supabase.from('squad_settings').select('*').single();
-    const { data: playersList } = await supabase.from('squad_players').select('*').order('created_at');
-    if (settings) setGameData(settings);
-    if (playersList) setPlayers(playersList);
-    setLoading(false);
+    const dataPromise = (async () => {
+        const { data: settings } = await supabase.from('squad_settings').select('*').single();
+        const { data: playersList } = await supabase.from('squad_players').select('*').order('created_at');
+        return { settings, playersList };
+    })();
+
+    if(isInitial) {
+        setLoading(true);
+        setTimeout(() => setProgress(100), 50);
+        setTimeout(() => setBootText("RUNNING.CHECKS"), 600);
+        setTimeout(() => setBootText("AUTH.ESTABLISHED"), 1300);
+        setTimeout(() => setBootText("LINK.READY"), 1900);
+
+        const [results] = await Promise.all([
+            dataPromise,
+            new Promise(r => setTimeout(r, 2100))
+        ]);
+
+        if (results.settings) setGameData(results.settings);
+        if (results.playersList) setPlayers(results.playersList);
+        setLoading(false);
+    } else {
+        const results = await dataPromise;
+        if (results.settings) setGameData(results.settings);
+        if (results.playersList) setPlayers(results.playersList);
+    }
   }, []);
 
   useEffect(() => {
     setIsMobile(/iPhone|iPad|iPod|Android/i.test(navigator.userAgent));
-    
-    // Check session on load
     const checkUser = async () => {
       const { data: { session } } = await supabase.auth.getSession();
       setUser(session?.user ?? null);
       initApp(true);
     };
     checkUser();
-
-    // Environment-aware Auth Listener
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
-      if (event === 'SIGNED_IN' || event === 'USER_UPDATED') {
-        setUser(session?.user ?? null);
-        setIsWaitingForEmail(false);
-        initApp(false);
-      }
-      if (event === 'SIGNED_OUT') {
-        setUser(null);
-        setPlayers([]);
-        setIsEditingGame(false);
-      }
+      if (event === 'SIGNED_IN' || event === 'USER_UPDATED') { setUser(session?.user ?? null); initApp(false); }
+      if (event === 'SIGNED_OUT') { setUser(null); setPlayers([]); setIsEditingGame(false); }
     });
-    
     return () => subscription.unsubscribe();
   }, [initApp]);
 
-  // --- AUTH ACTIONS ---
   const handleEmailAuth = async (type) => {
-    const currentUrl = window.location.origin;
     if (type === 'signup') {
-      const { error } = await supabase.auth.signUp({ 
-        email, 
-        password, 
-        options: { emailRedirectTo: currentUrl } 
-      });
+      const { error } = await supabase.auth.signUp({ email, password });
       if (error) return alert(error.message);
-      setIsWaitingForEmail(true);
+      alert("VERIFICATION_SENT");
     } else {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) alert(error.message);
     }
   };
 
-  const handleGoogleLogin = async () => {
-    await supabase.auth.signInWithOAuth({
-      provider: 'google',
-      options: { redirectTo: window.location.origin }
-    });
-  };
-
   const handleLogout = async () => {
     setLoading(true);
     await supabase.auth.signOut();
     localStorage.clear();
-    sessionStorage.clear();
-    // Aggressive reload to clear Vercel cache/state
     window.location.replace(window.location.origin);
   };
 
-  // --- ADMIN ACTIONS ---
   const transferHost = async (newHostId, newHostName) => {
-    const confirmTransfer = window.confirm(`TRANSFER ADMIN PRIVILEGES TO ${newHostName.toUpperCase()}?`);
-    if (!confirmTransfer) return;
-
-    const { error } = await supabase.from('squad_settings').update({ host_id: newHostId }).eq('id', 1);
-
-    if (error) {
-      alert("TRANSFER_FAILED: " + error.message);
-    } else {
-      alert(`ADMIN_TRANSFERRED_TO_${newHostName.toUpperCase()}`);
-      setIsEditingGame(false);
-      initApp(); 
-    }
+    if (!window.confirm(`TRANSFER ADMIN PRIVILEGES TO ${newHostName.toUpperCase()}?`)) return;
+    await supabase.from('squad_settings').update({ host_id: newHostId }).eq('id', 1);
+    initApp();
   };
 
-  // --- PLAYER ACTIONS ---
+  const copyWhatsAppStatus = () => {
+    const sorted = [...players].sort((a, b) => (a.user_id === gameData.host_id ? -1 : 1));
+    const list = sorted.map((p, i) => `${i + 1}. ${p.name} ${p.payment_status === 'verified' ? '✅' : '⏳'}`).join('\n');
+    const text = `⚽ *SQUAD_LIST: ${gameData.turf_name}*\n📅 ${gameData.time}\n\n${list}\n\n🔥 *${players.length}/${gameData.max_players || 14} SLOTS FILLED*\n🔗 Join: ${window.location.origin}`;
+    navigator.clipboard.writeText(text);
+    alert("WA_COPIED");
+  };
+
   const handleAddPlayer = async (e, isManualEntry = false) => {
     if(e) e.preventDefault();
     if(!newName.trim() || !user) return;
-    
-    // Feature: One entry per real user
-    if (!isManualEntry && players.some(p => p.user_id === user.id)) {
-      return alert("SYSTEM_LIMIT: ONE_ENTRY_PER_USER");
-    }
-
-    const { data, error } = await supabase.from('squad_players').insert([{ 
-        name: newName.toUpperCase(), 
-        user_id: isManualEntry ? null : user.id, 
-        payment_status: 'pending' 
+    if (!isManualEntry && players.some(p => p.user_id === user.id)) return;
+    if (players.length >= (gameData.max_players || 14)) return alert("SQUAD_FULL");
+    const { data } = await supabase.from('squad_players').insert([{ 
+        name: newName.toUpperCase(), user_id: isManualEntry ? null : user.id, payment_status: 'pending' 
     }]).select();
-    
-    if(data) {
-      setPlayers([...players, data[0]]);
-      setNewName("");
-    }
-    if(error) alert(error.message);
+    if(data) { setPlayers([...players, data[0]]); setNewName(""); }
   };
 
   const updateStatus = async (player, newStatus) => {
@@ -138,175 +142,187 @@ export default function App() {
   };
 
   const claimAccount = async (player) => {
-    if (!user || players.find(p => p.user_id === user?.id)) return alert("YOU_ALREADY_HAVE_A_SLOT");
-    const { data } = await supabase.from('squad_players').update({ user_id: user.id }).eq('id', player.id).select();
-    if (data) setPlayers(players.map(p => p.id === player.id ? { ...p, user_id: user.id } : p));
+    if (!user || players.some(p => p.user_id === user?.id)) return alert("ALREADY_IN_SQUAD");
+    await supabase.from('squad_players').update({ user_id: user.id }).eq('id', player.id);
+    initApp();
   };
 
-  const handleSystemShare = async () => {
-    const shareData = {
-      title: `SQUAD_LINKS: ${gameData.turf_name}`,
-      text: `SQUAD_LINKS: ${gameData.turf_name}\nVENUE: ${gameData.location}\nTIME: ${gameData.time}\n\nJoin the squad here:`,
-      url: window.location.origin,
-    };
-    try { if (navigator.share) await navigator.share(shareData); } catch (err) { console.log(err); }
-  };
-
-  // --- CALCULATIONS ---
   const isHost = user && gameData && user.id === gameData.host_id;
   const myEntry = user ? players.find(p => p.user_id === user.id) : null;
+  const maxSlots = gameData?.max_players || 14;
+  const occupancy = (players.length / maxSlots) * 100;
   const costPerPerson = gameData?.use_manual_split ? gameData.manual_price : (gameData ? Math.round(gameData.turf_price / (players.length || 1)) : 0);
-  const upiUrl = `upi://pay?pa=${gameData?.pay_to_number}&pn=TURF&am=${costPerPerson}&cu=INR&tn=TURF`;
-  const verifiedCount = players.filter(p => p.payment_status === 'verified').length;
-  const totalCollected = verifiedCount * costPerPerson;
+  const upiUrl = `upi://pay?pa=${gameData?.pay_to_number}&pn=TURF&am=${costPerPerson}&cu=INR`;
   const targetTotal = gameData?.use_manual_split ? (players.length * (gameData.manual_price || 0)) : (gameData?.turf_price || 0);
+  const currentTotal = players.filter(p => p.payment_status === 'verified').length * costPerPerson;
 
-  // --- RENDER LOGIN ---
-  if (loading) return <div style={containerStyle}>SYNCHRONIZING_CORE...</div>;
+  const sortedPlayers = [...players].sort((a, b) => (a.user_id === gameData.host_id ? -1 : b.user_id === gameData.host_id ? 1 : 0));
+
+  if (loading) return (
+    <div className="boot-screen">
+        <GlobalStyles />
+        <div>{bootText}<span className="cursor"></span></div>
+        <div className="loader-bar"><div className="loader-progress" style={{ width: `${progress}%` }}></div></div>
+    </div>
+  );
 
   if (!user) return (
-    <div style={containerStyle}>
-      <div style={{ maxWidth: '400px', margin: '100px auto 0 auto', padding: '0 20px' }}>
-        <div style={{...cardStyle, padding: '40px 20px', border: '2px solid #fff'}}>
-          <h1 style={{ fontSize: '28px', fontWeight: '900', letterSpacing: '-1px', marginBottom: '10px' }}>SQUAD_LINKS</h1>
-          {isWaitingForEmail ? (
-            <div style={{textAlign:'center'}}>
-                <p style={{fontSize:'12px', color:'#FFD700', marginBottom:'20px'}}>📧 VERIFICATION_LINK_SENT</p>
-                <p style={{fontSize:'10px', color:'#888', lineHeight:'1.5'}}>CHECK YOUR INBOX. THIS PAGE UPDATES AUTOMATICALLY UPON RETURN.</p>
-                <button onClick={() => setIsWaitingForEmail(false)} style={{...miniBtn, marginTop:'20px', border:'none'}}>[ BACK ]</button>
-            </div>
-          ) : !showEmailAuth ? (
-            <div style={{display: 'flex', flexDirection: 'column', gap: '12px'}}>
-              <button onClick={handleGoogleLogin} style={payBtn}>CONTINUE_WITH_GOOGLE</button>
-              <button onClick={() => setShowEmailAuth(true)} style={{...miniBtn, padding: '15px', fontSize: '12px'}}>INTERNAL_AUTH_LOGIN</button>
+    <div style={{...containerStyle, height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center'}}>
+        <GlobalStyles />
+        <div style={{...cardStyle, width: '100%', maxWidth: '350px', border: '1px solid #fff', padding: '30px'}}>
+          <h1 style={{ fontSize: '24px', fontWeight: '900', marginBottom: '30px', textAlign: 'center' }}>SQUAD_LINKS</h1>
+          {!showEmailAuth ? (
+            <div style={{display:'flex', flexDirection:'column', gap:'12px'}}>
+              <button onClick={() => supabase.auth.signInWithOAuth({provider:'google'})} style={payBtn}>GOOGLE_AUTH</button>
+              <button onClick={() => setShowEmailAuth(true)} style={miniBtn}>EMAIL_LOGIN</button>
             </div>
           ) : (
-            <div style={{display:'flex', flexDirection:'column', gap:'15px'}}>
-              <div style={inputGroup}><span style={inputLabel}>UID:</span><input style={inputStyle} placeholder="EMAIL" value={email} onChange={e => setEmail(e.target.value)} /></div>
-              <div style={inputGroup}><span style={inputLabel}>KEY:</span><input style={inputStyle} type="password" placeholder="PASSWORD" value={password} onChange={e => setPassword(e.target.value)} /></div>
-              <div style={{display:'flex', gap:'10px'}}>
-                <button onClick={() => handleEmailAuth('login')} style={{...payBtn, flex:1, fontSize: '11px'}}>LOGIN</button>
-                <button onClick={() => handleEmailAuth('signup')} style={{...payBtn, flex:1, backgroundColor:'#222', color:'#fff', border: '1px solid #444', fontSize: '11px'}}>SIGNUP</button>
+            <div style={{display:'flex', flexDirection:'column', gap:'12px'}}>
+              <input style={inputStyle} placeholder="EMAIL" onChange={e => setEmail(e.target.value)} />
+              <input style={inputStyle} type="password" placeholder="PASSWORD" onChange={e => setPassword(e.target.value)} />
+              <button onClick={() => handleEmailAuth('login')} style={payBtn}>LOGIN</button>
+              <button onClick={() => setShowEmailAuth(false)} style={{...miniBtn, border:'none'}}>BACK</button>
+            </div>
+          )}
+        </div>
+    </div>
+  );
+
+  return (
+    <div style={{ ...containerStyle, display: 'flex', flexDirection: 'column', height: '100vh' }}>
+      <GlobalStyles />
+      <div style={{ padding: '15px 15px 0 15px', backgroundColor: '#000', flexShrink: 0 }}>
+        <div style={{ maxWidth: '440px', margin: '0 auto' }}>
+          <div style={headerStyle}>
+            <h1 style={{ fontSize: '16px', fontWeight: '900' }}>SQUAD_LINKS</h1>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {isHost && <button onClick={() => setIsEditingGame(!isEditingGame)} style={miniBtn}>{isEditingGame ? 'CLOSE' : 'EDIT'}</button>}
+              <button onClick={handleLogout} style={miniBtn}>LOGOUT</button>
+            </div>
+          </div>
+          {!isEditingGame && (
+            <div style={{...cardStyle, padding: '15px'}}>
+              <h2 className="card-header" style={{ fontSize: '18px', margin: '0' }}>{gameData.turf_name}</h2>
+              <p style={{ fontSize: '10px', color: '#888', margin: '4px 0 12px 0' }}>{gameData.location} // {gameData.time}</p>
+              <div style={{ marginBottom: '15px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '8px', marginBottom: '4px' }}>
+                      <span>SQUAD: {players.length}/{maxSlots}</span>
+                      <span>{occupancy >= 100 ? 'FULL' : 'OPEN'}</span>
+                  </div>
+                  <div style={{ height: '2px', background: '#222', width: '100%' }}><div style={{ height: '100%', width: `${Math.min(occupancy, 100)}%`, background: '#fff' }} /></div>
               </div>
-              <button onClick={() => setShowEmailAuth(false)} style={{...miniBtn, border: 'none', color: '#666'}}>[ BACK ]</button>
+              <div style={{display:'flex', gap:'5px', marginBottom: '15px'}}>
+                  <button onClick={() => window.open(gameData.map_link)} style={{...miniBtn, flex:1, border: '1px solid #222'}}>MAPS</button>
+                  {isHost && <button onClick={copyWhatsAppStatus} style={{...miniBtn, flex:1, border: '1px solid #fff'}}>WA_COPY</button>}
+              </div>
+              {myEntry && (
+                <div style={{ display: 'flex', justifyContent: 'center' }}>
+                  {myEntry.payment_status === 'pending' ? (
+                    !showPaymentModal ? (
+                      <button onClick={() => setShowPaymentModal(true)} style={payBtn}>PAY_SHARE: ₹{costPerPerson}</button>
+                    ) : (
+                      <div style={{ padding: '15px', border: '1px solid #333', background: '#000', width: '100%' }}>
+                          <div style={{display:'flex', justifyContent:'center', padding:'10px', background:'#fff', marginBottom:'15px'}}><QRCodeSVG value={upiUrl} size={150} /></div>
+                          {isMobile && <button onClick={() => window.location.href = upiUrl} style={payBtn}>OPEN_UPI_APP</button>}
+                          <button onClick={() => setShowPaymentModal(false)} style={{...miniBtn, border:'none', marginTop:'10px'}}>CLOSE</button>
+                      </div>
+                    )
+                  ) : (
+                    <button disabled style={payedBtnStyle}>PAYMENT_COMPLETE</button>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </div>
       </div>
-    </div>
-  );
 
-  // --- RENDER DASHBOARD ---
-  return (
-    <div style={containerStyle}>
-      <div style={{ maxWidth: '440px', margin: '0 auto' }}>
-        <div style={headerStyle}>
-          <h1 style={{ fontSize: '18px', fontWeight: '800', margin: 0 }}>SQUAD_LINKS</h1>
-          <div style={{ display: 'flex', gap: '10px' }}>
-            {isHost && <button onClick={() => setIsEditingGame(!isEditingGame)} style={miniBtn}>{isEditingGame ? '[CLOSE]' : '[EDIT]'}</button>}
-            <button onClick={handleLogout} style={{...miniBtn, borderColor: '#444', color: '#e8e8e8ff'}}>[LOGOUT]</button>
-          </div>
-        </div>
-
-        {isEditingGame ? (
-          <div style={cardStyle}>
-            <h3 style={labelStyle}>HOST_SETTINGS</h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+      <div style={{ overflowY: 'auto', flex: 1, padding: '0 15px', backgroundColor: '#000' }}>
+        <div style={{ maxWidth: '440px', margin: '0 auto', paddingBottom: '100px' }}>
+          {isEditingGame && (
+            <div style={{...cardStyle, marginBottom: '15px', padding: '15px'}}>
+              <div style={inputGroup}><span style={inputLabel}>MAX:</span><input style={inputStyle} type="number" value={gameData.max_players} onChange={e => setGameData({...gameData, max_players: e.target.value})} /></div>
               <div style={inputGroup}><span style={inputLabel}>TURF:</span><input style={inputStyle} value={gameData.turf_name} onChange={e => setGameData({...gameData, turf_name: e.target.value})} /></div>
               <div style={inputGroup}><span style={inputLabel}>VENUE:</span><input style={inputStyle} value={gameData.location} onChange={e => setGameData({...gameData, location: e.target.value})} /></div>
-              <div style={inputGroup}><span style={inputLabel}>MAP:</span><input style={inputStyle} value={gameData.map_link} onChange={e => setGameData({...gameData, map_link: e.target.value})} /></div>
+              <div style={inputGroup}><span style={inputLabel}>MAPS:</span><input style={inputStyle} value={gameData.map_link} onChange={e => setGameData({...gameData, map_link: e.target.value})} /></div>
               <div style={inputGroup}><span style={inputLabel}>TIME:</span><input style={inputStyle} value={gameData.time} onChange={e => setGameData({...gameData, time: e.target.value})} /></div>
               <div style={inputGroup}><span style={inputLabel}>TOTAL:</span><input style={inputStyle} type="number" value={gameData.turf_price} onChange={e => setGameData({...gameData, turf_price: e.target.value})} /></div>
               <div style={inputGroup}><span style={inputLabel}>UPI:</span><input style={inputStyle} value={gameData.pay_to_number} onChange={e => setGameData({...gameData, pay_to_number: e.target.value})} /></div>
-              <div style={{display:'flex', gap:'12px', alignItems:'center', padding: '10px 0', justifyContent: 'flex-start'}}><span style={{...labelStyle, marginBottom: 0}}>MANUAL_SPLIT:</span><input type="checkbox" checked={gameData.use_manual_split} onChange={e => setGameData({...gameData, use_manual_split: e.target.checked})} style={{width:'18px', height:'18px', cursor:'pointer', margin: 0}} /></div>
+              <div style={{display:'flex', gap:'12px', alignItems:'center', padding:'10px 0', justifyContent:'flex-start'}}><span style={{...labelStyle, marginBottom:0}}>MANUAL_SPLIT:</span><input type="checkbox" checked={gameData.use_manual_split} onChange={e => setGameData({...gameData, use_manual_split: e.target.checked})} style={{width:'18px', height:'18px', cursor:'pointer'}} /></div>
               {gameData.use_manual_split && <div style={inputGroup}><span style={inputLabel}>PRICE:</span><input style={inputStyle} type="number" value={gameData.manual_price} onChange={e => setGameData({...gameData, manual_price: e.target.value})} /></div>}
               <button onClick={() => supabase.from('squad_settings').update(gameData).eq('id', 1).then(() => setIsEditingGame(false))} style={payBtn}>SAVE_CHANGES</button>
             </div>
+          )}
+
+          {(isHost || !myEntry) && (
+            <form onSubmit={(e) => handleAddPlayer(e, false)} style={{ display: 'flex', marginBottom: '15px', gap: '5px' }}>
+              <input style={{...inputStyle, flex: 1, backgroundColor: '#000', padding: '12px', border: '1px solid #222'}} placeholder="NAME" value={newName} onChange={e => setNewName(e.target.value)} />
+              <button type="submit" disabled={!!myEntry || players.length >= maxSlots} style={{...payBtn, width: 'auto', padding: '0 20px', backgroundColor: (myEntry || players.length >= maxSlots) ? '#111' : '#fff', color: (myEntry || players.length >= maxSlots) ? '#555' : '#000', height: '44px'}}>JOIN</button>
+              {isHost && <button type="button" onClick={() => handleAddPlayer(null, true)} style={{...miniBtn, height: '44px', border: '1px solid #222'}}>+EXTRA</button>}
+            </form>
+          )}
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+              <h3 style={labelStyle}>// PLAYERS ({players.length})</h3>
+              {sortedPlayers.map(p => {
+                  const isMe = user?.id === p.user_id;
+                  const isPaid = p.payment_status === 'verified';
+                  const isReview = p.payment_status === 'review';
+                  
+                  // LOGIC FIX: Admin (isHost) can change status for ANYONE. 
+                  // Users (isMe) can change their own status to 'review' but not back.
+                  const canToggle = isHost || (isMe && !isPaid);
+
+                  return (
+                      <div key={p.id} style={{...playerRow, borderBottom: isMe ? '1px solid #0088ff' : '1px solid #222'}}>
+                          <span className="player-name" style={{color: isMe ? '#0088ff' : '#fff'}}>{(p.user_id === gameData.host_id) && '👑 '}{p.name} {isMe && '(YOU)'}</span>
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                               {isHost && !isMe && p.user_id && <button onClick={() => transferHost(p.user_id, p.name)} style={{...miniBtn, border: 'none', color: '#555', padding: '6px 4px'}}>PROMOTE</button>}
+                               {!p.user_id && !myEntry && <button onClick={() => claimAccount(p)} style={{...miniBtn, color:'#0088ff', borderColor: '#0088ff', padding: '6px 8px'}}>CLAIM</button>}
+                               <button onClick={() => {
+                                      if(isPaid && isHost) updateStatus(p, 'pending');
+                                      else if(isReview && isHost) updateStatus(p, 'verified');
+                                      else if(!isPaid && (isMe || isHost)) updateStatus(p, 'review');
+                                  }}
+                                  disabled={!canToggle}
+                                  style={{
+                                    ...miniBtn, minWidth: '85px',
+                                    backgroundColor: isPaid ? '#fff' : 'transparent',
+                                    color: isPaid ? '#000' : '#fff',
+                                    border: isReview ? '2px solid #fff' : isPaid ? '1px solid #fff' : '1px solid #222',
+                                    padding: isReview ? '5px 10px' : '6px 11px',
+                                    opacity: (!canToggle) ? 0.3 : 1
+                                  }}
+                              >{isPaid ? 'PAID' : isReview ? 'REVIEW' : 'UNPAID'}</button>
+                              {isHost && <button onClick={() => supabase.from('squad_players').delete().eq('id', p.id).then(() => initApp())} style={{ color: '#555', border: 'none', background: 'none', padding: '0 5px' }}>×</button>}
+                          </div>
+                      </div>
+                  );
+              })}
           </div>
-        ) : (
-          <div style={cardStyle}>
-            <div style={{ borderBottom: '1px solid #333', paddingBottom: '15px', marginBottom: '15px' }}>
-                <h2 style={{ fontSize: '22px', margin: '0' }}>{gameData.turf_name}</h2>
-                <p style={{ fontSize: '11px', color: '#666', margin: '5px 0' }}>{gameData.location} // {gameData.time}</p>
-                <div style={{display:'flex', gap:'5px', marginTop:'10px'}}>
-                  <button onClick={() => { navigator.clipboard.writeText(gameData.map_link); alert("COPIED"); }} style={{...miniBtn, flex:1}}>COPY_MAP</button>
-                  <button onClick={handleSystemShare} style={{...miniBtn, flex:1}}>SHARE_SQUAD</button>
-                </div>
-            </div>
-            {myEntry ? (
-                myEntry.payment_status === 'pending' ? (
-                  !showPaymentModal ? <button onClick={() => setShowPaymentModal(true)} style={payBtn}>PAY_SHARE (₹{costPerPerson})</button> :
-                  <div style={{ background: '#1a1a1a', padding: '15px', border: '1px solid #333' }}>
-                      <div style={{display:'flex', justifyContent:'space-between', marginBottom:'15px'}}><span style={labelStyle}>UPI_PAYMENT</span><button onClick={() => setShowPaymentModal(false)} style={miniBtn}>X</button></div>
-                      <div style={{display:'flex', justifyContent:'center', padding:'10px', background:'#fff', marginBottom:'15px'}}><QRCodeSVG value={upiUrl} size={150} /></div>
-                      {isMobile && <button onClick={() => window.location.href = upiUrl} style={payBtn}>OPEN_UPI_APP</button>}
-                  </div>
-                ) : <button disabled style={{...payBtn, backgroundColor: '#222', color: '#fff', opacity:0.5}}>PAYMENT_SUBMITTED</button>
-            ) : <p style={{...labelStyle, textAlign:'center'}}>JOIN_PLAYERS_TO_PAY</p>}
-          </div>
-        )}
-
-        <form onSubmit={(e) => handleAddPlayer(e, false)} style={{ display: 'flex', margin: '20px 0', gap: '5px' }}>
-          <input style={{...inputStyle, flex: 1, backgroundColor: '#1a1a1a', border: '1px solid #333', padding: '12px'}} placeholder="ENTER_NAME" value={newName} onChange={e => setNewName(e.target.value)} />
-          <button type="submit" disabled={!!myEntry} style={{backgroundColor: myEntry ? '#222' : '#fff', color: myEntry ? '#666' : '#000', fontWeight:'800', border:'none', padding:'0 20px', fontSize: '10px', cursor: myEntry ? 'not-allowed' : 'pointer'}}>
-            {myEntry ? 'IN_ROSTER' : 'JOIN'}
-          </button>
-          {isHost && <button type="button" onClick={() => handleAddPlayer(null, true)} style={{...miniBtn, padding:'0 15px'}}>+ENTRY</button>}
-        </form>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
-            <h3 style={labelStyle}>// PLAYERS ({players.length})</h3>
-            {players.map(p => {
-                const isMe = user?.id === p.user_id;
-                const isEntryAdmin = p.user_id === gameData.host_id;
-                const isManualEntry = p.user_id === null;
-                let btnColor = '#444'; let btnText = 'MARK PAID';
-                if (p.payment_status === 'review') { btnColor = '#FFD700'; btnText = isHost ? 'APPROVE?' : 'WAITING'; }
-                else if (p.payment_status === 'verified') { btnColor = '#00FF41'; btnText = 'VERIFIED'; }
-                return (
-                    <div key={p.id} style={{...playerRow, backgroundColor: isMe ? '#111' : 'transparent'}}>
-                        <span style={{color: isMe ? '#0088ff' : '#fff'}}>{isEntryAdmin && '👑 '}{p.name} {isMe && '(YOU)'}</span>
-                        <div style={{ display: 'flex', gap: '10px' }}>
-                             
-                             {/* FEATURE: TRANSFER ADMIN */}
-                             {isHost && !isMe && !isManualEntry && (
-                               <button onClick={() => transferHost(p.user_id, p.name)} style={{...miniBtn, borderColor: '#FFD700', color: '#FFD700'}}>TRANSFER</button>
-                             )}
-
-                             {isManualEntry && !myEntry && <button onClick={() => claimAccount(p)} style={{...miniBtn, color:'#0088ff', borderColor:'#0088ff'}}>CLAIM</button>}
-                             
-                             <button onClick={() => {
-                                    if(p.payment_status === 'verified' && isHost) updateStatus(p, 'pending');
-                                    else if(p.payment_status === 'review' && isHost) updateStatus(p, 'verified');
-                                    else if(p.payment_status === 'review' && isMe) updateStatus(p, 'pending');
-                                    else if(p.payment_status === 'pending' && (isMe || (isHost && isManualEntry))) updateStatus(p, 'review');
-                                }}
-                                disabled={(!isMe && !isHost && !(isManualEntry && !myEntry)) || (p.payment_status === 'verified' && !isHost)}
-                                style={{ ...miniBtn, borderColor: btnColor, color: btnColor, minWidth: '85px' }}
-                            >{btnText}</button>
-                            
-                            {isHost && <button onClick={() => supabase.from('squad_players').delete().eq('id', p.id).then(() => initApp())} style={{ color: '#ff4444', border: 'none', background: 'none' }}>[X]</button>}
-                        </div>
-                    </div>
-                );
-            })}
         </div>
-        <div style={{marginTop:'30px', padding:'15px', borderTop:'1px solid #333', textAlign:'center'}}>
-           <span style={{...labelStyle, margin:0, textAlign:'center'}}>TOTAL_COLLECTED: ₹{totalCollected} / ₹{targetTotal}</span>
-        </div>
+      </div>
+
+      <div style={{ 
+        position: 'fixed', bottom: 0, left: 0, right: 0, 
+        backgroundColor: '#000', borderTop: '1px solid #222', 
+        padding: '16px 15px', zIndex: 10, display: 'flex', 
+        justifyContent: 'center', alignItems: 'center'
+      }}>
+        <span style={{...labelStyle, margin: 0, textAlign: 'center'}}>COLLECTED: ₹{currentTotal} / ₹{targetTotal}</span>
       </div>
     </div>
   );
 }
 
-// --- STYLING ---
-const containerStyle = { fontFamily: "'JetBrains Mono', monospace", backgroundColor: '#0a0a0a', minHeight: '100vh', color: '#fff', padding: '20px', textTransform: 'uppercase' };
-const headerStyle = { display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #333', paddingBottom: '10px', marginBottom: '30px' };
-const cardStyle = { border: '1px solid #fff', padding: '20px', backgroundColor: '#111', textAlign: 'center', marginBottom: '20px' };
-const inputGroup = { display: 'flex', alignItems: 'center', backgroundColor: '#1a1a1a', border: '1px solid #333', padding: '0 12px', marginBottom: '10px' };
-const inputLabel = { fontSize: '10px', color: '#666', fontWeight: '800', marginRight: '10px' };
+const containerStyle = { fontFamily: "'JetBrains Mono', monospace", backgroundColor: '#000', color: '#fff', textTransform: 'uppercase' };
+const headerStyle = { display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #222', paddingBottom: '10px', marginBottom: '15px' };
+const cardStyle = { border: '1px solid #222', padding: '20px', backgroundColor: '#000', marginBottom: '15px' };
+const inputGroup = { display: 'flex', alignItems: 'center', backgroundColor: '#000', border: '1px solid #222', padding: '0 12px', marginBottom: '10px' };
+const inputLabel = { fontSize: '10px', color: '#555', fontWeight: '800', marginRight: '10px' };
 const inputStyle = { flex: 1, backgroundColor: 'transparent', border: 'none', color: '#fff', padding: '12px 0', outline: 'none', fontFamily: "'JetBrains Mono', monospace" };
-const payBtn = { backgroundColor: '#fff', color: '#000', border: 'none', fontWeight: '800', cursor: 'pointer', padding: '15px', width: '100%', fontSize: '14px' };
-const playerRow = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px', borderBottom: '1px solid #222', fontSize: '13px' };
-const labelStyle = { fontSize: '10px', color: '#666', fontWeight: '800', marginBottom: '10px', display: 'block', textAlign: 'left' };
-const miniBtn = { background: 'none', border: '1px solid #444', color: '#fff', fontSize: '10px', cursor: 'pointer', padding: '5px 10px' };
+const payBtn = { backgroundColor: '#fff', color: '#000', border: 'none', fontWeight: '900', cursor: 'pointer', height: '48px', fontSize: '12px', width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center' };
+const payedBtnStyle = { backgroundColor: '#000', color: '#555', border: '1px solid #222', fontWeight: '900', height: '48px', fontSize: '12px', width: '100%', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center' };
+const playerRow = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 0', fontSize: '12px' };
+const labelStyle = { fontSize: '9px', color: '#555', fontWeight: '800', marginBottom: '10px', display: 'block' };
+const miniBtn = { background: 'none', border: '1px solid #222', color: '#fff', fontSize: '10px', cursor: 'pointer', padding: '6px 12px' };
